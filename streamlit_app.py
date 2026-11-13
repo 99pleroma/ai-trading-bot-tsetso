@@ -43,7 +43,24 @@ st.set_page_config(
 
 # Simple CSS only; no custom HTML fragments are used in the app body.
 st.markdown(
-    """ <style> .stApp { background: #0b1017; color: #e8eef6; } header[data-testid="stHeader"] { background: #0b1017; } .block-container { max-width: 1450px; padding-top: 1.1rem; padding-bottom: 2.5rem; } [data-testid="stMetric"] { background: #151e29; border: 1px solid #2a394a; border-radius: 12px; padding: 13px; min-width: 0; } [data-testid="stMetricLabel"] { color: #98a9bb; } [data-testid="stMetricValue"] { color: #f2f6fa; font-size: clamp(17px, 2.1vw, 27px); } div.stButton > button { border-radius: 9px; font-weight: 700; min-height: 42px; } div[data-testid="stDataFrame"] { border: 1px solid #2a394a; border-radius: 10px; } hr { border-color: #2a394a; } </style> """,
+    """
+    <style>
+    .stApp { background: #0b1017; color: #e8eef6; }
+    header[data-testid="stHeader"] { background: #0b1017; }
+    .block-container { max-width: 1450px; padding-top: 1.1rem; padding-bottom: 2.5rem; }
+    [data-testid="stMetric"] {
+        background: #151e29; border: 1px solid #2a394a;
+        border-radius: 12px; padding: 13px; min-width: 0;
+    }
+    [data-testid="stMetricLabel"] { color: #98a9bb; }
+    [data-testid="stMetricValue"] { color: #f2f6fa; font-size: clamp(17px, 2.1vw, 27px); }
+    div.stButton > button {
+        border-radius: 9px; font-weight: 700; min-height: 42px;
+    }
+    div[data-testid="stDataFrame"] { border: 1px solid #2a394a; border-radius: 10px; }
+    hr { border-color: #2a394a; }
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -67,19 +84,51 @@ def database():
 def init_database():
     with database() as conn:
         conn.execute(
-            """CREATE TABLE IF NOT EXISTS account ( id INTEGER PRIMARY KEY CHECK (id = 1), cash REAL NOT NULL, realized_pnl REAL NOT NULL, daily_date TEXT NOT NULL, day_start_equity REAL NOT NULL, halted INTEGER NOT NULL DEFAULT 0 )"""
+            """CREATE TABLE IF NOT EXISTS account (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                cash REAL NOT NULL,
+                realized_pnl REAL NOT NULL,
+                daily_date TEXT NOT NULL,
+                day_start_equity REAL NOT NULL,
+                halted INTEGER NOT NULL DEFAULT 0
+            )"""
         )
         conn.execute(
-            """CREATE TABLE IF NOT EXISTS positions ( symbol TEXT PRIMARY KEY, quantity REAL NOT NULL, entry_price REAL NOT NULL, entry_fee REAL NOT NULL, stop_price REAL NOT NULL, target_price REAL NOT NULL, entry_candle INTEGER NOT NULL )"""
+            """CREATE TABLE IF NOT EXISTS positions (
+                symbol TEXT PRIMARY KEY,
+                quantity REAL NOT NULL,
+                entry_price REAL NOT NULL,
+                entry_fee REAL NOT NULL,
+                stop_price REAL NOT NULL,
+                target_price REAL NOT NULL,
+                entry_candle INTEGER NOT NULL
+            )"""
         )
         conn.execute(
-            """CREATE TABLE IF NOT EXISTS trades ( id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, price REAL NOT NULL, quantity REAL NOT NULL, fee REAL NOT NULL, pnl REAL NOT NULL, reason TEXT NOT NULL )"""
+            """CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                price REAL NOT NULL,
+                quantity REAL NOT NULL,
+                fee REAL NOT NULL,
+                pnl REAL NOT NULL,
+                reason TEXT NOT NULL
+            )"""
         )
         conn.execute(
-            """CREATE TABLE IF NOT EXISTS processed_candles ( symbol TEXT PRIMARY KEY, candle_time INTEGER NOT NULL )"""
+            """CREATE TABLE IF NOT EXISTS processed_candles (
+                symbol TEXT PRIMARY KEY,
+                candle_time INTEGER NOT NULL
+            )"""
         )
         conn.execute(
-            """CREATE TABLE IF NOT EXISTS equity_history ( id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, equity REAL NOT NULL )"""
+            """CREATE TABLE IF NOT EXISTS equity_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                equity REAL NOT NULL
+            )"""
         )
         row = conn.execute("SELECT id FROM account WHERE id = 1").fetchone()
         if row is None:
@@ -241,7 +290,8 @@ def marked_equity(account: dict, positions: dict, market: dict) -> float:
 
 def insert_trade(conn, symbol, side, price, quantity, fee, pnl, reason):
     conn.execute(
-        """INSERT INTO trades (timestamp, symbol, side, price, quantity, fee, pnl, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO trades (timestamp, symbol, side, price, quantity, fee, pnl, reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             datetime.now(timezone.utc).isoformat(timespec="seconds"),
             symbol,
@@ -371,7 +421,9 @@ def execute_paper_cycle(market: dict) -> list[str]:
             target_price = entry_price + 2 * stop_distance
             account["cash"] -= gross_cost + entry_fee
             conn.execute(
-                """INSERT INTO positions (symbol, quantity, entry_price, entry_fee, stop_price, target_price, entry_candle) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO positions
+                   (symbol, quantity, entry_price, entry_fee, stop_price, target_price, entry_candle)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (symbol, quantity, entry_price, entry_fee, stop_price, target_price, candle_time),
             )
             positions[symbol] = {
@@ -397,7 +449,8 @@ def execute_paper_cycle(market: dict) -> list[str]:
             account["halted"] = 1
 
         conn.execute(
-            """UPDATE account SET cash=?, realized_pnl=?, daily_date=?, day_start_equity=?, halted=? WHERE id=1""",
+            """UPDATE account SET cash=?, realized_pnl=?, daily_date=?,
+               day_start_equity=?, halted=? WHERE id=1""",
             (
                 account["cash"], account["realized_pnl"], account["daily_date"],
                 account["day_start_equity"], account["halted"],
@@ -479,17 +532,4 @@ def run_backtest(frame: pd.DataFrame, starting_cash: float = START_BALANCE) -> d
             if atr_value > 0:
                 stop_distance = max(1.5 * atr_value, entry_price * 0.005)
                 risk_budget = cash * RISK_PER_TRADE
-                qty_by_risk = risk_budget / stop_distance
-                qty_by_cap = cash * MAX_ALLOCATION / (entry_price * (1 + FEE_RATE))
-                quantity = min(qty_by_risk, qty_by_cap)
-                entry_fee = quantity * entry_price * FEE_RATE
-                gross_cost = quantity * entry_price
-
-                if quantity > 0 and gross_cost + entry_fee <= cash:
-                    cash -= gross_cost + entry_fee
-                    position = {
-                        "entry": entry_price,
-                        "quantity": quantity,
-                        "entry_fee": entry_fee,
-                        "stop": entry_price - stop_distance,
-                      
+                qty_by_risk = risk_budget / stop_dis
