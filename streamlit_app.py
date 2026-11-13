@@ -1,119 +1,30 @@
 
 import streamlit as st
 import pandas as pd
+import altair as alt
 import urllib.request
 import json
+import sqlite3
 from datetime import datetime, timezone
 
-# ==========================================
-# ATB 99 | PROFESSIONAL TRADING TERMINAL
-# VERSION 1.2
+# =====================================================
+# ATB 99 | ADVANCED TRADING TERMINAL | VERSION 1.3
 # PAPER TRADING ONLY
-# ==========================================
+# =====================================================
 
 st.set_page_config(
-    page_title="ATB 99 | Trading Terminal",
+    page_title="ATB 99 | Advanced Terminal",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# ---------------- DESIGN ----------------
-
-st.markdown("""
-<style>
-.stApp {
-    background: #0b0f14;
-    color: #e7edf5;
-}
-header[data-testid="stHeader"] {
-    background: #0b0f14;
-}
-.block-container {
-    max-width: 1450px;
-    padding-top: 1.5rem;
-    padding-bottom: 3rem;
-}
-[data-testid="stMetric"] {
-    background: #151c25;
-    border: 1px solid #273342;
-    border-radius: 13px;
-    padding: 17px;
-}
-[data-testid="stMetricLabel"] {
-    color: #93a4b8;
-}
-[data-testid="stMetricValue"] {
-    color: #f1f5f9;
-}
-div.stButton > button {
-    background: #00c78a;
-    color: #06130e;
-    border: 0;
-    border-radius: 9px;
-    font-weight: 700;
-    min-height: 45px;
-    width: 100%;
-}
-div.stButton > button:hover {
-    background: #00e5a0;
-    color: #06130e;
-}
-.terminal-header {
-    background: linear-gradient(120deg,#14232c,#101923);
-    border: 1px solid #263c49;
-    border-radius: 16px;
-    padding: 22px;
-    margin-bottom: 18px;
-}
-.terminal-title {
-    font-size: 30px;
-    font-weight: 800;
-    color: #f4f8fc;
-}
-.terminal-sub {
-    color: #8da4b6;
-    font-size: 13px;
-}
-.section-title {
-    color: #e5edf5;
-    font-size: 19px;
-    font-weight: 700;
-    margin-top: 15px;
-}
-.status {
-    display: inline-block;
-    padding: 6px 12px;
-    background: #123d31;
-    color: #00e5a0;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 700;
-}
-.panel {
-    background: #121922;
-    border: 1px solid #273342;
-    border-radius: 13px;
-    padding: 16px;
-    margin-bottom: 10px;
-}
-.small-label {
-    color: #8496a8;
-    font-size: 12px;
-}
-.green {color:#00d99a;}
-.red {color:#ff647c;}
-.muted {color:#91a0af;}
-hr {border-color:#273342;}
-</style>
-""", unsafe_allow_html=True)
-
-# ---------------- CONFIG ----------------
+# ---------------- CONFIGURATION ----------------
 
 START_BALANCE = 1000.0
 FEE_RATE = 0.001
 RISK_PER_TRADE = 0.005
-MAX_POSITION = 0.25
+MAX_ALLOCATION = 0.25
 DAILY_LOSS_LIMIT = 0.02
 
 MARKETS = {
@@ -121,7 +32,94 @@ MARKETS = {
     "ETH/USDT": "ETHUSDT"
 }
 
-# ---------------- SESSION ----------------
+DB_FILE = "atb99_history.db"
+
+# ---------------- DESIGN ----------------
+
+st.markdown("""
+<style>
+.stApp {
+    background: #090e14;
+    color: #e7edf5;
+}
+header[data-testid="stHeader"] {
+    background: #090e14;
+}
+.block-container {
+    max-width: 1500px;
+    padding-top: 1.2rem;
+    padding-bottom: 3rem;
+}
+[data-testid="stMetric"] {
+    background: #141d28;
+    border: 1px solid #293747;
+    border-radius: 12px;
+    padding: 15px;
+    min-width: 0;
+}
+[data-testid="stMetricValue"] {
+    color: #f1f5f9;
+    font-size: clamp(17px, 2.2vw, 27px);
+}
+[data-testid="stMetricLabel"] {
+    color: #93a4b8;
+}
+div.stButton > button {
+    background: #00c78a;
+    color: #06130e;
+    border: 0;
+    border-radius: 9px;
+    font-weight: 700;
+    min-height: 44px;
+    width: 100%;
+}
+div.stButton > button:hover {
+    background: #00e5a0;
+    color: #06130e;
+}
+.terminal {
+    background: linear-gradient(120deg,#14232e,#101720);
+    border: 1px solid #2a4050;
+    border-radius: 15px;
+    padding: 22px;
+    margin-bottom: 20px;
+}
+.brand {
+    font-size: 30px;
+    font-weight: 800;
+    color: #f4f8fc;
+}
+.subtitle {
+    font-size: 12px;
+    color: #8fa5b8;
+    letter-spacing: 1px;
+}
+.pill {
+    display: inline-block;
+    background: #123d31;
+    color: #00e5a0;
+    padding: 7px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 700;
+    margin-top: 15px;
+}
+.section {
+    color: #e6edf5;
+    font-size: 19px;
+    font-weight: 750;
+    margin-top: 12px;
+    margin-bottom: 10px;
+}
+div[data-testid="stDataFrame"] {
+    border: 1px solid #293747;
+    border-radius: 10px;
+}
+footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------- SESSION STATE ----------------
 
 defaults = {
     "cash": START_BALANCE,
@@ -139,10 +137,58 @@ for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-# ---------------- DATA ----------------
+# ---------------- DATABASE ----------------
 
+def init_database():
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                market TEXT,
+                action TEXT,
+                price REAL,
+                quantity REAL,
+                fee REAL,
+                pnl REAL,
+                reason TEXT
+            )
+        """)
+
+def save_trade(trade):
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("""
+            INSERT INTO trades
+            (timestamp, market, action, price,
+             quantity, fee, pnl, reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            trade["Time"],
+            trade["Market"],
+            trade["Action"],
+            trade["Price"],
+            trade["Quantity"],
+            trade["Fee"],
+            trade["P/L"],
+            trade["Reason"]
+        ))
+
+def load_database_history():
+    with sqlite3.connect(DB_FILE) as conn:
+        return pd.read_sql_query(
+            "SELECT * FROM trades ORDER BY id DESC LIMIT 200",
+            conn
+        )
+
+init_database()
+
+# ---------------- MARKET DATA ----------------
+
+@st.cache_data(ttl=60)
 def get_market(symbol):
+
     pair = MARKETS[symbol]
+
     url = (
         "https://api.kraken.com/0/public/OHLC"
         f"?pair={pair}&interval=60"
@@ -150,11 +196,11 @@ def get_market(symbol):
 
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "ATB99/1.2"}
+        headers={"User-Agent": "ATB99/1.3"}
     )
 
     with urllib.request.urlopen(req, timeout=20) as response:
-        payload = json.loads(response.read().decode())
+        payload = json.loads(response.read().decode("utf-8"))
 
     if payload.get("error"):
         raise Exception(str(payload["error"]))
@@ -164,163 +210,408 @@ def get_market(symbol):
         if key != "last" and isinstance(value, list)
     )
 
-    # Exclude unfinished candle
+    # Ignore the unfinished candle.
     rows = rows[:-1]
 
-    if len(rows) < 55:
+    if len(rows) < 60:
         raise Exception("Insufficient candle history")
 
-    return [{
+    return pd.DataFrame([{
         "time": int(x[0]),
         "open": float(x[1]),
         "high": float(x[2]),
         "low": float(x[3]),
         "close": float(x[4]),
         "volume": float(x[6])
-    } for x in rows]
-
+    } for x in rows])
 
 # ---------------- INDICATORS ----------------
 
-def ema(values, period):
-    alpha = 2 / (period + 1)
-    result = [values[0]]
+def calculate_indicators(df):
 
-    for value in values[1:]:
-        result.append(
-            alpha * value + (1-alpha) * result[-1]
+    df = df.copy()
+
+    df["ema20"] = df["close"].ewm(
+        span=20, adjust=False
+    ).mean()
+
+    df["ema50"] = df["close"].ewm(
+        span=50, adjust=False
+    ).mean()
+
+    delta = df["close"].diff()
+
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
+
+    avg_gain = gains.ewm(
+        alpha=1/14, adjust=False, min_periods=14
+    ).mean()
+
+    avg_loss = losses.ewm(
+        alpha=1/14, adjust=False, min_periods=14
+    ).mean()
+
+    rs = avg_gain / avg_loss.where(avg_loss != 0)
+
+    df["rsi"] = 100 - (100 / (1 + rs))
+    df.loc[avg_loss == 0, "rsi"] = 100
+
+    previous_close = df["close"].shift(1)
+
+    tr = pd.concat([
+        df["high"] - df["low"],
+        (df["high"] - previous_close).abs(),
+        (df["low"] - previous_close).abs()
+    ], axis=1).max(axis=1)
+
+    df["atr"] = tr.ewm(
+        alpha=1/14, adjust=False, min_periods=14
+    ).mean()
+
+    cross_up = (
+        (df["ema20"].shift(1) <= df["ema50"].shift(1))
+        & (df["ema20"] > df["ema50"])
+    )
+
+    cross_down = (
+        (df["ema20"].shift(1) >= df["ema50"].shift(1))
+        & (df["ema20"] < df["ema50"])
+    )
+
+    df["signal"] = "HOLD"
+
+    df.loc[
+        cross_up & df["rsi"].between(45, 68),
+        "signal"
+    ] = "BUY"
+
+    df.loc[cross_down, "signal"] = "SELL"
+
+    return df
+
+# ---------------- CANDLESTICK CHART ----------------
+
+def make_chart(df):
+
+    chart_data = df.tail(100).copy()
+
+    chart_data["date"] = pd.to_datetime(
+        chart_data["time"], unit="s", utc=True
+    )
+
+    chart_data["color"] = chart_data.apply(
+        lambda x: "UP" if x["close"] >= x["open"] else "DOWN",
+        axis=1
+    )
+
+    base = alt.Chart(chart_data).encode(
+        x=alt.X(
+            "date:T",
+            title=None,
+            axis=alt.Axis(labelColor="#9aabba", grid=False)
+        )
+    )
+
+    candles = base.mark_rule().encode(
+        y=alt.Y(
+            "low:Q",
+            title="Price (USDT)",
+            scale=alt.Scale(zero=False),
+            axis=alt.Axis(labelColor="#9aabba", gridColor="#263342")
+        ),
+        y2="high:Q",
+        color=alt.Color(
+            "color:N",
+            scale=alt.Scale(
+                domain=["UP", "DOWN"],
+                range=["#00d69a", "#ff647c"]
+            ),
+            legend=None
+        ),
+        tooltip=[
+            alt.Tooltip("date:T", title="Time"),
+            alt.Tooltip("open:Q", title="Open", format=",.2f"),
+            alt.Tooltip("high:Q", title="High", format=",.2f"),
+            alt.Tooltip("low:Q", title="Low", format=",.2f"),
+            alt.Tooltip("close:Q", title="Close", format=",.2f")
+        ]
+    )
+
+    bodies = base.mark_bar(size=7).encode(
+        y=alt.Y(
+            "open:Q",
+            scale=alt.Scale(zero=False)
+        ),
+        y2="close:Q",
+        color=alt.Color(
+            "color:N",
+            scale=alt.Scale(
+                domain=["UP", "DOWN"],
+                range=["#00d69a", "#ff647c"]
+            ),
+            legend=None
+        )
+    )
+
+    ema20 = base.mark_line(
+        color="#f5bd4f", strokeWidth=1.5
+    ).encode(
+        y=alt.Y("ema20:Q", scale=alt.Scale(zero=False))
+    )
+
+    ema50 = base.mark_line(
+        color="#55aaff", strokeWidth=1.5
+    ).encode(
+        y=alt.Y("ema50:Q", scale=alt.Scale(zero=False))
+    )
+
+    return (
+        alt.layer(candles, bodies, ema20, ema50)
+        .properties(
+            height=330,
+            background="#111923",
+            padding=10
+        )
+        .configure_view(stroke="#263342")
+        .configure_axis(
+            labelColor="#9aabba",
+            titleColor="#9aabba",
+            gridColor="#263342"
+        )
+        .interactive()
+    )
+
+# ---------------- BACKTEST ENGINE ----------------
+
+def run_backtest(df, starting_cash=500.0):
+
+    cash = starting_cash
+    position = None
+    trades = []
+    equity_curve = []
+
+    for i in range(55, len(df) - 1):
+
+        candle = df.iloc[i]
+        next_candle = df.iloc[i + 1]
+
+        if pd.isna(candle["atr"]) or candle["atr"] <= 0:
+            continue
+
+        # Manage existing position using only
+        # candles that occurred after its entry.
+
+        if position is not None:
+
+            stop_hit = candle["low"] <= position["stop"]
+            target_hit = candle["high"] >= position["target"]
+
+            exit_price = None
+            reason = None
+
+            # Conservative rule if both levels are hit.
+            if stop_hit:
+                exit_price = position["stop"]
+                reason = "STOP LOSS"
+
+            elif target_hit:
+                exit_price = position["target"]
+                reason = "TAKE PROFIT"
+
+            elif candle["signal"] == "SELL":
+                exit_price = next_candle["open"]
+                reason = "SELL SIGNAL"
+
+            if exit_price is not None:
+
+                exit_fee = position["qty"] * exit_price * FEE_RATE
+
+                pnl = (
+                    position["qty"] *
+                    (exit_price - position["entry"])
+                    - position["entry_fee"]
+                    - exit_fee
+                )
+
+                cash += position["qty"] * exit_price - exit_fee
+
+                trades.append({
+                    "Market": "BACKTEST",
+                    "Entry": round(position["entry"], 4),
+                    "Exit": round(exit_price, 4),
+                    "P/L": round(pnl, 4),
+                    "Reason": reason
+                })
+
+                position = None
+
+                # Avoid re-entry on the same candle.
+                equity_curve.append(cash)
+                continue
+
+        # New entry at NEXT candle open,
+        # after the signal candle has closed.
+
+        if position is None and candle["signal"] == "BUY":
+
+            entry = float(next_candle["open"])
+
+            distance = max(
+                float(candle["atr"]) * 1.5,
+                entry * 0.005
+            )
+
+            risk_money = cash * RISK_PER_TRADE
+
+            qty_by_risk = risk_money / distance
+            qty_by_allocation = cash * MAX_ALLOCATION / entry
+
+            qty = min(qty_by_risk, qty_by_allocation)
+
+            cost = qty * entry
+            entry_fee = cost * FEE_RATE
+
+            if qty > 0 and cost + entry_fee <= cash:
+
+                cash -= cost + entry_fee
+
+                position = {
+                    "entry": entry,
+                    "qty": qty,
+                    "entry_fee": entry_fee,
+                    "stop": entry - distance,
+                    "target": entry + 2 * distance
+                }
+
+        if position:
+            current_equity = cash + position["qty"] * candle["close"]
+        else:
+            current_equity = cash
+
+        equity_curve.append(current_equity)
+
+    # Close any remaining position at final available close.
+
+    if position is not None:
+
+        final_price = float(df.iloc[-1]["close"])
+
+        exit_fee = position["qty"] * final_price * FEE_RATE
+
+        pnl = (
+            position["qty"] *
+            (final_price - position["entry"])
+            - position["entry_fee"]
+            - exit_fee
         )
 
-    return result
+        cash += position["qty"] * final_price - exit_fee
 
+        trades.append({
+            "Market": "BACKTEST",
+            "Entry": round(position["entry"], 4),
+            "Exit": round(final_price, 4),
+            "P/L": round(pnl, 4),
+            "Reason": "END OF TEST"
+        })
 
-def rsi(values, period=14):
-    changes = [
-        values[i] - values[i-1]
-        for i in range(1, len(values))
-    ]
+    equity_curve.append(cash)
 
-    gains = [max(x, 0) for x in changes]
-    losses = [max(-x, 0) for x in changes]
+    # Statistics
 
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+    total_return = cash - starting_cash
+    return_pct = total_return / starting_cash * 100
 
-    for i in range(period, len(gains)):
-        avg_gain = (
-            avg_gain * (period-1) + gains[i]
-        ) / period
+    winners = [x for x in trades if x["P/L"] > 0]
+    losers = [x for x in trades if x["P/L"] < 0]
 
-        avg_loss = (
-            avg_loss * (period-1) + losses[i]
-        ) / period
+    win_rate = (
+        len(winners) / len(trades) * 100
+        if trades else 0
+    )
 
-    if avg_loss == 0:
-        return 100.0 if avg_gain > 0 else 50.0
+    gross_profit = sum(x["P/L"] for x in winners)
+    gross_loss = abs(sum(x["P/L"] for x in losers))
 
-    return 100 - 100 / (1 + avg_gain / avg_loss)
+    profit_factor = (
+        gross_profit / gross_loss
+        if gross_loss > 0
+        else (float("inf") if gross_profit > 0 else 0)
+    )
 
+    peak = starting_cash
+    max_drawdown = 0.0
 
-def atr(candles, period=14):
-    ranges = []
+    for value in equity_curve:
+        peak = max(peak, value)
 
-    for i in range(1, len(candles)):
-        current = candles[i]
-        previous = candles[i-1]
-
-        ranges.append(max(
-            current["high"] - current["low"],
-            abs(current["high"] - previous["close"]),
-            abs(current["low"] - previous["close"])
-        ))
-
-    value = sum(ranges[:period]) / period
-
-    for item in ranges[period:]:
-        value = (
-            value * (period-1) + item
-        ) / period
-
-    return value
-
-
-def analyze(symbol):
-    candles = get_market(symbol)
-    close = [x["close"] for x in candles]
-
-    fast = ema(close, 20)
-    slow = ema(close, 50)
-
-    current_rsi = rsi(close)
-    current_atr = atr(candles)
-
-    signal = "HOLD"
-
-    if (
-        fast[-2] <= slow[-2]
-        and fast[-1] > slow[-1]
-        and 45 <= current_rsi <= 68
-    ):
-        signal = "BUY"
-
-    elif fast[-2] >= slow[-2] and fast[-1] < slow[-1]:
-        signal = "SELL"
-
-    chart = pd.DataFrame({
-        "Time": [
-            datetime.fromtimestamp(x["time"], timezone.utc)
-            for x in candles[-100:]
-        ],
-        "Price": close[-100:],
-        "EMA 20": fast[-100:],
-        "EMA 50": slow[-100:]
-    })
+        if peak > 0:
+            drawdown = (peak - value) / peak * 100
+            max_drawdown = max(max_drawdown, drawdown)
 
     return {
-        "price": close[-1],
-        "rsi": current_rsi,
-        "ema20": fast[-1],
-        "ema50": slow[-1],
-        "atr": current_atr,
-        "signal": signal,
-        "time": candles[-1]["time"],
-        "high": candles[-1]["high"],
-        "low": candles[-1]["low"],
-        "chart": chart
+        "final": cash,
+        "return": return_pct,
+        "win_rate": win_rate,
+        "profit_factor": profit_factor,
+        "max_drawdown": max_drawdown,
+        "trades": trades,
+        "equity_curve": equity_curve
     }
 
+# ---------------- PAPER TRADING ----------------
 
-# ---------------- TRADING ENGINE ----------------
+def save_paper_trade(
+    symbol, action, price, qty, fee, pnl, reason
+):
 
-def close_position(symbol, price, reason):
+    trade = {
+        "Time": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "Market": symbol,
+        "Action": action,
+        "Price": round(price, 4),
+        "Quantity": round(qty, 8),
+        "Fee": round(fee, 4),
+        "P/L": round(pnl, 4),
+        "Reason": reason
+    }
+
+    st.session_state.trades.append(trade)
+    save_trade(trade)
+
+
+def close_paper_position(symbol, price, reason):
+
     position = st.session_state.positions[symbol]
-    qty = position["qty"]
 
-    exit_fee = qty * price * FEE_RATE
+    qty = position["qty"]
+    fee = qty * price * FEE_RATE
 
     pnl = (
         qty * (price - position["entry"])
         - position["entry_fee"]
-        - exit_fee
+        - fee
     )
 
-    st.session_state.cash += qty * price - exit_fee
+    st.session_state.cash += qty * price - fee
     st.session_state.realized += pnl
     st.session_state.daily_pnl += pnl
 
-    st.session_state.trades.append({
-        "Time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
-        "Market": symbol,
-        "Action": "SELL",
-        "Price": round(price, 4),
-        "P/L": round(pnl, 4),
-        "Reason": reason
-    })
+    save_paper_trade(
+        symbol, "SELL", price, qty,
+        fee, pnl, reason
+    )
 
     del st.session_state.positions[symbol]
 
+    return pnl
 
-def run_cycle(data):
+
+def execute_paper_cycle(data):
+
     messages = []
 
     today = datetime.now(timezone.utc).date().isoformat()
@@ -334,37 +625,54 @@ def run_cycle(data):
         st.session_state.halted = True
 
     if st.session_state.halted:
-        return ["DAILY LOSS LIMIT — TRADING HALTED"]
+        return ["DAILY LOSS LIMIT: trading halted"]
 
     for symbol, item in data.items():
-        candle_time = item["time"]
+
+        candle_time = int(item["time"])
 
         if st.session_state.last_processed.get(symbol) == candle_time:
-            messages.append(f"{symbol}: Already processed")
+            messages.append(f"{symbol}: candle already processed")
             continue
 
         st.session_state.last_processed[symbol] = candle_time
 
-        price = item["price"]
+        price = float(item["close"])
+
         position = st.session_state.positions.get(symbol)
 
-        # Exit management: only candles after entry
         if position:
+
             if candle_time <= position["entry_candle"]:
-                messages.append(f"{symbol}: Position protected")
+                messages.append(f"{symbol}: waiting for next candle")
                 continue
 
-            if item["low"] <= position["stop"]:
-                close_position(symbol, position["stop"], "STOP LOSS")
-                messages.append(f"{symbol}: STOP LOSS")
+            stop_hit = item["low"] <= position["stop"]
+            target_hit = item["high"] >= position["target"]
 
-            elif item["high"] >= position["target"]:
-                close_position(symbol, position["target"], "TAKE PROFIT")
-                messages.append(f"{symbol}: TAKE PROFIT")
+            if stop_hit:
+                pnl = close_paper_position(
+                    symbol, position["stop"], "STOP LOSS"
+                )
+                messages.append(
+                    f"{symbol}: STOP LOSS | {pnl:+.2f} USDT"
+                )
+
+            elif target_hit:
+                pnl = close_paper_position(
+                    symbol, position["target"], "TAKE PROFIT"
+                )
+                messages.append(
+                    f"{symbol}: TAKE PROFIT | {pnl:+.2f} USDT"
+                )
 
             elif item["signal"] == "SELL":
-                close_position(symbol, price, "SELL SIGNAL")
-                messages.append(f"{symbol}: SELL SIGNAL")
+                pnl = close_paper_position(
+                    symbol, price, "SELL SIGNAL"
+                )
+                messages.append(
+                    f"{symbol}: SELL | {pnl:+.2f} USDT"
+                )
 
             continue
 
@@ -372,22 +680,23 @@ def run_cycle(data):
             messages.append(f"{symbol}: HOLD")
             continue
 
-        if item["atr"] <= 0:
-            messages.append(f"{symbol}: Invalid ATR")
-            continue
-
-        distance = max(item["atr"] * 1.5, price * 0.005)
+        distance = max(
+            float(item["atr"]) * 1.5,
+            price * 0.005
+        )
 
         risk_money = st.session_state.cash * RISK_PER_TRADE
-        qty_risk = risk_money / distance
-        qty_limit = st.session_state.cash * MAX_POSITION / price
 
-        qty = min(qty_risk, qty_limit)
+        qty = min(
+            risk_money / distance,
+            st.session_state.cash * MAX_ALLOCATION / price
+        )
+
         cost = qty * price
         fee = cost * FEE_RATE
 
         if qty <= 0 or cost + fee > st.session_state.cash:
-            messages.append(f"{symbol}: Insufficient balance")
+            messages.append(f"{symbol}: insufficient balance")
             continue
 
         st.session_state.cash -= cost + fee
@@ -401,92 +710,108 @@ def run_cycle(data):
             "target": price + 2 * distance
         }
 
-        st.session_state.trades.append({
-            "Time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
-            "Market": symbol,
-            "Action": "BUY",
-            "Price": round(price, 4),
-            "P/L": 0.0,
-            "Reason": "EMA CROSS"
-        })
+        save_paper_trade(
+            symbol, "BUY", price, qty,
+            fee, 0.0, "EMA CROSS"
+        )
 
         messages.append(f"{symbol}: VIRTUAL BUY")
 
     return messages
 
-
 # ---------------- PORTFOLIO ----------------
 
-def get_equity(data):
+def calculate_equity(data):
+
     value = st.session_state.cash
 
     for symbol, position in st.session_state.positions.items():
         if symbol in data:
-            value += position["qty"] * data[symbol]["price"]
+            value += (
+                position["qty"] * data[symbol]["close"]
+            )
 
     return value
-
 
 # ---------------- HEADER ----------------
 
 st.markdown("""
-<div class="terminal-header">
-    <div class="terminal-title">📈 ATB 99</div>
-    <div class="terminal-sub">
-        PROFESSIONAL CRYPTO TRADING TERMINAL
-        &nbsp; | &nbsp; VERSION 1.2
+<div class="terminal">
+    <div class="brand">📈 ATB 99</div>
+    <div class="subtitle">
+        ADVANCED ALGORITHMIC TRADING TERMINAL | VERSION 1.3
     </div>
-    <br>
-    <span class="status">● DEMO / PAPER TRADING</span>
+    <span class="pill">● DEMO / PAPER TRADING</span>
 </div>
 """, unsafe_allow_html=True)
 
 # ---------------- SIDEBAR ----------------
 
 with st.sidebar:
+
     st.title("ATB 99 CONTROL")
-    st.caption("SYSTEM SETTINGS")
 
     st.write("Mode: PAPER TRADING")
     st.write("Leverage: DISABLED")
     st.write("Risk per trade: 0.5%")
-    st.write("Max position: 25%")
+    st.write("Max allocation: 25%")
 
     if st.button("RESET DEMO ACCOUNT"):
+
         for key, value in defaults.items():
             st.session_state[key] = value
+
         st.rerun()
 
-# ---------------- DATA REFRESH ----------------
+    st.caption(
+        "Resetting the account clears session data."
+    )
+
+# ---------------- REFRESH ----------------
 
 if st.button("↻ REFRESH MARKET DATA"):
+
+    get_market.clear()
     st.rerun()
 
-data = {}
+# ---------------- FETCH MARKETS ----------------
 
-with st.spinner("Connecting to Kraken..."):
+market_data = {}
+errors = {}
+
+with st.spinner("Loading Kraken market data..."):
+
     for symbol in MARKETS:
+
         try:
-            data[symbol] = analyze(symbol)
+            raw = get_market(symbol)
+            market_data[symbol] = calculate_indicators(raw)
+
         except Exception as error:
-            st.error(f"{symbol}: {error}")
+            errors[symbol] = str(error)
+
+for symbol, error in errors.items():
+    st.error(f"{symbol}: {error}")
 
 # ---------------- DASHBOARD ----------------
 
-if data:
+if market_data:
 
-    equity = get_equity(data)
+    equity = calculate_equity(market_data)
     pnl = equity - START_BALANCE
+    return_pct = pnl / START_BALANCE * 100
 
-    st.markdown('<div class="section-title">PORTFOLIO OVERVIEW</div>',
-                unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section">PORTFOLIO OVERVIEW</div>',
+        unsafe_allow_html=True
+    )
 
-    c1, c2, c3, c4 = st.columns(4)
+    a, b, c, d = st.columns(4)
 
-    c1.metric("TOTAL EQUITY", f"{equity:,.2f} USDT")
-    c2.metric("AVAILABLE CASH", f"{st.session_state.cash:,.2f} USDT")
-    c3.metric("TOTAL P/L", f"{pnl:+.2f} USDT")
-    c4.metric("OPEN POSITIONS", str(len(st.session_state.positions)))
+    a.metric("TOTAL EQUITY", f"{equity:,.2f} USDT")
+    b.metric("AVAILABLE CASH", f"{st.session_state.cash:,.2f} USDT")
+    c.metric("TOTAL P/L", f"{pnl:+,.2f} USDT")
+    d.metric("RETURN", f"{return_pct:+.2f}%")
 
     st.caption(
         f"Realized P/L: {st.session_state.realized:+.2f} USDT"
@@ -494,137 +819,7 @@ if data:
 
     st.divider()
 
-    # MARKET CARDS
+    # MARKET INTELLIGENCE
 
-    st.markdown('<div class="section-title">MARKET INTELLIGENCE</div>',
-                unsafe_allow_html=True)
-
-    tabs = st.tabs(list(data.keys()))
-
-    for tab, (symbol, item) in zip(tabs, data.items()):
-
-        with tab:
-            a, b, c, d = st.columns(4)
-
-            a.metric("LAST PRICE", f"{item['price']:,.2f}")
-            b.metric("RSI 14", f"{item['rsi']:.2f}")
-            c.metric("EMA 20", f"{item['ema20']:,.2f}")
-            d.metric("EMA 50", f"{item['ema50']:,.2f}")
-
-            if item["signal"] == "BUY":
-                st.success("BUY SIGNAL")
-
-            elif item["signal"] == "SELL":
-                st.error("SELL SIGNAL")
-
-            else:
-                st.warning("HOLD — NO ENTRY")
-
-            st.line_chart(
-                item["chart"].set_index("Time"),
-                height=320
-            )
-
-    st.divider()
-
-    # TRADING ENGINE
-
-    st.markdown('<div class="section-title">AUTOMATED TRADING ENGINE</div>',
-                unsafe_allow_html=True)
-
-    st.write(
-        "Симулацията използва затворени едночасови свещи. "
-        "Изпълнението е ръчно задействано."
-    )
-
-    if st.button("▶ EXECUTE PAPER TRADING CYCLE"):
-        results = run_cycle(data)
-
-        for result in results:
-            st.write("•", result)
-
-        new_equity = get_equity(data)
-
-        st.session_state.equity_history.append({
-            "Time": datetime.now(timezone.utc),
-            "Equity": new_equity
-        })
-
-        st.rerun()
-
-    st.divider()
-
-    # POSITIONS
-
-    st.markdown('<div class="section-title">OPEN POSITIONS</div>',
-                unsafe_allow_html=True)
-
-    if st.session_state.positions:
-
-        rows = []
-
-        for symbol, pos in st.session_state.positions.items():
-            current = data.get(symbol, {}).get("price", pos["entry"])
-
-            rows.append({
-                "Market": symbol,
-                "Entry": round(pos["entry"], 4),
-                "Current": round(current, 4),
-                "Quantity": round(pos["qty"], 8),
-                "Stop Loss": round(pos["stop"], 4),
-                "Take Profit": round(pos["target"], 4)
-            })
-
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
-
-    else:
-        st.info("No open positions.")
-
-    st.divider()
-
-    # HISTORY
-
-    st.markdown('<div class="section-title">TRADE HISTORY</div>',
-                unsafe_allow_html=True)
-
-    if st.session_state.trades:
-        st.dataframe(
-            pd.DataFrame(list(reversed(st.session_state.trades))),
-            use_container_width=True
-        )
-    else:
-        st.info("No trades executed yet.")
-
-    st.divider()
-
-    # EQUITY CURVE
-
-    st.markdown('<div class="section-title">EQUITY PERFORMANCE</div>',
-                unsafe_allow_html=True)
-
-    if st.session_state.equity_history:
-        history = pd.DataFrame(st.session_state.equity_history)
-        st.line_chart(history.set_index("Time"))
-    else:
-        st.info("Performance history will appear after a trading cycle.")
-
-else:
-    st.error("Market data unavailable. Check Kraken connection.")
-
-# ---------------- FOOTER ----------------
-
-st.divider()
-
-st.caption(
-    "ATB 99 | Professional Trading Terminal | "
-    "Kraken Public API | PAPER TRADING ONLY"
-)
-
-st.caption(
-    "No real orders. No guaranteed profit. "
-    "Experimental algorithmic trading software."
-)
-
-st.caption(
-    "UTC: " + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-)
+    st.markdown(
+        '<div class="section">
