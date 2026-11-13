@@ -1,292 +1,725 @@
 
 import streamlit as st
+import pandas as pd
 import urllib.request
 import json
-import math
 from datetime import datetime, timezone
 
+# ==================================================
+# ATB 99 - VERSION 1.1
+# AUTOMATED CRYPTO PAPER TRADING
+# ==================================================
+
 st.set_page_config(
-    page_title="ATB 99 | AI Trading",
+    page_title="ATB 99 | AI Trading System",
     page_icon="📈",
     layout="wide"
 )
 
-# -----------------------------
-# CONFIGURATION
-# -----------------------------
-START_BALANCE = 1000.0
-FEE = 0.001
-RISK = 0.005
+# ---------------- CONFIGURATION ----------------
 
-if "cash" not in st.session_state:
-    st.session_state.cash = START_BALANCE
-if "positions" not in st.session_state:
-    st.session_state.positions = {}
-if "trades" not in st.session_state:
-    st.session_state.trades = []
-if "realized" not in st.session_state:
-    st.session_state.realized = 0.0
+START_BALANCE = 1000.0
+FEE_RATE = 0.001
+RISK_PER_TRADE = 0.005
+MAX_POSITION = 0.25
+DAILY_LOSS_LIMIT = 0.02
+
+MARKETS = {
+    "BTC/USDT": "XBTUSDT",
+    "ETH/USDT": "ETHUSDT"
+}
+
+# ---------------- SESSION STATE ----------------
+
+defaults = {
+    "cash": START_BALANCE,
+    "positions": {},
+    "trades": [],
+    "realized_pnl": 0.0,
+    "daily_pnl": 0.0,
+    "daily_date": datetime.now(timezone.utc).date().isoformat(),
+    "last_processed": {},
+    "equity_history": [],
+    "halted": False
+}
+
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+def reset_account():
+    for key, value in defaults.items():
+        st.session_state[key] = value
+
+
+# ---------------- MARKET DATA ----------------
 
 def get_market(symbol):
-    url = (
-        "https://api.binance.com/api/v3/klines"
-        f"?symbol={symbol}&interval=1h&limit=100"
-    )
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "ATB99-Demo"}
-    )
-    with urllib.request.urlopen(req, timeout=15) as response:
-        rows = json.loads(response.read().decode())
 
-    # Ignore the currently open candle
+    pair = MARKETS[symbol]
+
+    url = (
+        "https://api.kraken.com/0/public/OHLC"
+        f"?pair={pair}&interval=60"
+    )
+
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "ATB99-PaperTrading/1.1"}
+    )
+
+    with urllib.request.urlopen(
+        request, timeout=20
+    ) as response:
+
+        payload = json.loads(
+            response.read().decode("utf-8")
+        )
+
+    if payload.get("error"):
+        raise Exception(str(payload["error"]))
+
+    result = payload["result"]
+
+    rows = next(
+        value for key, value in result.items()
+        if key != "last" and isinstance(value, list)
+    )
+
+    # Последната свещ е незавършена.
     rows = rows[:-1]
 
-    close = [float(x[4]) for x in rows]
-    high = [float(x[2]) for x in rows]
-    low = [float(x[3]) for x in rows]
-    volume = [float(x[5]) for x in rows]
+    if len(rows) < 55:
+        raise Exception("Недостатъчно исторически данни")
 
-    return close, high, low, volume
+    candles = []
 
-def ema(values, period):
+    for row in rows:
+        candles.append({
+            "time": int(row[0]),
+            "open": float(row[1]),
+            "high": float(row[2]),
+            "low": float(row[3]),
+            "close": float(row[4]),
+            "volume": float(row[6])
+        })
+
+    return candles
+
+
+# ---------------- TECHNICAL INDICATORS ----------------
+
+def calculate_ema(values, period):
+
     alpha = 2 / (period + 1)
+
     result = [values[0]]
+
     for value in values[1:]:
-        result.append(alpha * value + (1-alpha) * result[-1])
+        result.append(
+            alpha * value +
+            (1 - alpha) * result[-1]
+        )
+
     return result
 
-def calculate_rsi(values, period=14):
-    gains = []
-    losses = []
-    for i in range(1, len(values)):
-        change = values[i] - values[i-1]
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
 
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
+def calculate_rsi(values, period=14):
+
+    changes = [
+        values[i] - values[i - 1]
+        for i in range(1, len(values))
+    ]
+
+    gains = [max(x, 0) for x in changes]
+    losses = [max(-x, 0) for x in changes]
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = (
+            avg_gain * (period - 1) + gains[i]
+        ) / period
+
+        avg_loss = (
+            avg_loss * (period - 1) + losses[i]
+        ) / period
 
     if avg_loss == 0:
-        return 100.0
+        return 100.0 if avg_gain > 0 else 50.0
 
-    return 100 - (100 / (1 + avg_gain / avg_loss))
+    rs = avg_gain / avg_loss
 
-def analyze(symbol):
-    close, high, low, volume = get_market(symbol)
-    fast = ema(close, 20)
-    slow = ema(close, 50)
+    return 100 - (100 / (1 + rs))
+
+
+def calculate_atr(candles, period=14):
+
+    true_ranges = []
+
+    for i in range(1, len(candles)):
+
+        current = candles[i]
+        previous = candles[i - 1]
+
+        tr = max(
+            current["high"] - current["low"],
+            abs(current["high"] - previous["close"]),
+            abs(current["low"] - previous["close"])
+        )
+
+        true_ranges.append(tr)
+
+    atr = sum(true_ranges[:period]) / period
+
+    for value in true_ranges[period:]:
+        atr = (
+            atr * (period - 1) + value
+        ) / period
+
+    return atr
+
+
+# ---------------- MARKET ANALYSIS ----------------
+
+def analyze_market(symbol):
+
+    candles = get_market(symbol)
+
+    close = [x["close"] for x in candles]
+
+    ema20 = calculate_ema(close, 20)
+    ema50 = calculate_ema(close, 50)
+
     rsi = calculate_rsi(close)
+    atr = calculate_atr(candles)
 
     signal = "HOLD"
-    if fast[-2] <= slow[-2] and fast[-1] > slow[-1] and 45 <= rsi <= 68:
-        signal = "BUY"
-    elif fast[-2] >= slow[-2] and fast[-1] < slow[-1]:
-        signal = "SELL"
 
-    atr_values = [
-        max(high[i]-low[i],
-            abs(high[i]-close[i-1]),
-            abs(low[i]-close[i-1]))
-        for i in range(1, len(close))
-    ]
-    atr = sum(atr_values[-14:]) / min(14, len(atr_values))
+    crossed_up = (
+        ema20[-2] <= ema50[-2]
+        and ema20[-1] > ema50[-1]
+    )
+
+    crossed_down = (
+        ema20[-2] >= ema50[-2]
+        and ema20[-1] < ema50[-1]
+    )
+
+    if crossed_up and 45 <= rsi <= 68:
+        signal = "BUY"
+
+    elif crossed_down:
+        signal = "SELL"
 
     return {
         "price": close[-1],
+        "ema20": ema20[-1],
+        "ema50": ema50[-1],
         "rsi": rsi,
-        "ema20": fast[-1],
-        "ema50": slow[-1],
-        "signal": signal,
         "atr": atr,
-        "high": high[-1],
-        "low": low[-1],
-        "chart": close[-50:]
+        "signal": signal,
+        "candle_time": candles[-1]["time"],
+        "high": candles[-1]["high"],
+        "low": candles[-1]["low"],
+        "chart": [
+            {
+                "Time": datetime.fromtimestamp(
+                    candles[i]["time"],
+                    timezone.utc
+                ),
+                "Price": close[i],
+                "EMA 20": ema20[i],
+                "EMA 50": ema50[i]
+            }
+            for i in range(max(0, len(candles) - 100), len(candles))
+        ]
     }
 
-def paper_cycle(market):
+
+# ---------------- PAPER TRADING ----------------
+
+def close_position(symbol, price, reason):
+
+    position = st.session_state.positions[symbol]
+
+    qty = position["qty"]
+
+    exit_fee = qty * price * FEE_RATE
+
+    pnl = (
+        qty * (price - position["entry"])
+        - position["entry_fee"]
+        - exit_fee
+    )
+
+    st.session_state.cash += qty * price - exit_fee
+
+    st.session_state.realized_pnl += pnl
+    st.session_state.daily_pnl += pnl
+
+    st.session_state.trades.append({
+        "Time": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "Market": symbol,
+        "Action": "SELL",
+        "Price": round(price, 4),
+        "Quantity": round(qty, 8),
+        "Fee": round(exit_fee, 4),
+        "P/L": round(pnl, 4),
+        "Reason": reason
+    })
+
+    del st.session_state.positions[symbol]
+
+    return pnl
+
+
+def execute_paper_cycle(market_data):
+
     messages = []
 
-    for symbol, data in market.items():
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    if today != st.session_state.daily_date:
+
+        st.session_state.daily_date = today
+        st.session_state.daily_pnl = 0.0
+        st.session_state.halted = False
+
+    if st.session_state.daily_pnl <= (
+        -START_BALANCE * DAILY_LOSS_LIMIT
+    ):
+        st.session_state.halted = True
+
+    if st.session_state.halted:
+        return ["ТЪРГОВИЯТА Е СПРЯНА: достигнат е дневният лимит."]
+
+    for symbol, data in market_data.items():
+
+        candle_time = data["candle_time"]
+
+        if st.session_state.last_processed.get(symbol) == candle_time:
+            messages.append(
+                f"{symbol}: тази свещ вече е обработена."
+            )
+            continue
+
+        st.session_state.last_processed[symbol] = candle_time
+
         price = data["price"]
+
         position = st.session_state.positions.get(symbol)
 
+        # -------- EXIT MANAGEMENT --------
+
         if position:
-            reason = None
-            exit_price = price
 
-            if data["low"] <= position["stop"]:
-                reason = "STOP LOSS"
-                exit_price = position["stop"]
-            elif data["high"] >= position["target"]:
-                reason = "TAKE PROFIT"
-                exit_price = position["target"]
-            elif data["signal"] == "SELL":
-                reason = "SELL SIGNAL"
+            stop_hit = data["low"] <= position["stop"]
+            target_hit = data["high"] >= position["target"]
 
-            if reason:
-                qty = position["qty"]
-                fee = qty * exit_price * FEE
-                pnl = (
-                    qty * (exit_price-position["entry"])
-                    - fee - position["entry_fee"]
+            # Ако и двете са достигнати в една свещ,
+            # приемаме по-консервативно, че Stop Loss е първи.
+
+            if stop_hit:
+
+                pnl = close_position(
+                    symbol,
+                    position["stop"],
+                    "STOP LOSS"
                 )
-                st.session_state.cash += qty * exit_price - fee
-                st.session_state.realized += pnl
-                st.session_state.trades.append({
-                    "Time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
-                    "Market": symbol,
-                    "Action": "SELL",
-                    "Price": round(exit_price, 4),
-                    "P/L USDT": round(pnl, 4),
-                    "Reason": reason
-                })
-                del st.session_state.positions[symbol]
-                messages.append(f"{symbol}: затворена позиция — {reason}")
+
+                messages.append(
+                    f"{symbol}: STOP LOSS | P/L {pnl:.2f} USDT"
+                )
+
+            elif target_hit:
+
+                pnl = close_position(
+                    symbol,
+                    position["target"],
+                    "TAKE PROFIT"
+                )
+
+                messages.append(
+                    f"{symbol}: TAKE PROFIT | P/L {pnl:.2f} USDT"
+                )
+
+            elif data["signal"] == "SELL":
+
+                pnl = close_position(
+                    symbol,
+                    price,
+                    "SELL SIGNAL"
+                )
+
+                messages.append(
+                    f"{symbol}: SELL SIGNAL | P/L {pnl:.2f} USDT"
+                )
+
             continue
+
+        # -------- ENTRY MANAGEMENT --------
 
         if data["signal"] != "BUY":
-            messages.append(f"{symbol}: няма входящ сигнал")
+
+            messages.append(f"{symbol}: HOLD")
             continue
 
-        stop_distance = max(data["atr"] * 1.5, price * 0.005)
-        risk_money = st.session_state.cash * RISK
-        qty = min(
-            risk_money / stop_distance,
-            st.session_state.cash * 0.25 / price
+        if data["atr"] <= 0:
+            messages.append(f"{symbol}: невалиден ATR")
+            continue
+
+        stop_distance = max(
+            data["atr"] * 1.5,
+            price * 0.005
         )
 
-        cost = qty * price
-        entry_fee = cost * FEE
+        risk_money = (
+            st.session_state.cash * RISK_PER_TRADE
+        )
 
-        if cost + entry_fee > st.session_state.cash or qty <= 0:
-            messages.append(f"{symbol}: недостатъчен баланс")
+        qty_by_risk = risk_money / stop_distance
+
+        qty_by_allocation = (
+            st.session_state.cash * MAX_POSITION / price
+        )
+
+        qty = min(qty_by_risk, qty_by_allocation)
+
+        cost = qty * price
+        entry_fee = cost * FEE_RATE
+
+        if qty <= 0 or cost + entry_fee > st.session_state.cash:
+            messages.append(
+                f"{symbol}: недостатъчен виртуален баланс"
+            )
             continue
 
+        stop = price - stop_distance
+        target = price + 2 * stop_distance
+
         st.session_state.cash -= cost + entry_fee
+
         st.session_state.positions[symbol] = {
             "qty": qty,
             "entry": price,
-            "stop": price - stop_distance,
-            "target": price + 2 * stop_distance,
+            "stop": stop,
+            "target": target,
             "entry_fee": entry_fee
         }
 
         st.session_state.trades.append({
-            "Time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+            "Time": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
             "Market": symbol,
             "Action": "BUY",
             "Price": round(price, 4),
-            "P/L USDT": 0.0,
+            "Quantity": round(qty, 8),
+            "Fee": round(entry_fee, 4),
+            "P/L": 0.0,
             "Reason": "EMA CROSS"
         })
-        messages.append(f"{symbol}: виртуална покупка")
+
+        messages.append(
+            f"{symbol}: BUY @ {price:.4f} | "
+            f"SL {stop:.4f} | TP {target:.4f}"
+        )
 
     return messages
 
-# -----------------------------
-# USER INTERFACE
-# -----------------------------
+
+# ---------------- PORTFOLIO ----------------
+
+def calculate_equity(market_data):
+
+    position_value = 0.0
+
+    for symbol, position in st.session_state.positions.items():
+
+        if symbol in market_data:
+
+            position_value += (
+                position["qty"] *
+                market_data[symbol]["price"]
+            )
+
+    return st.session_state.cash + position_value
+
+
+# ---------------- DASHBOARD ----------------
+
 st.title("📈 ATB 99")
 st.subheader("AI Trading Bot | Cryptocurrency")
-st.caption("Version 1.0 • PAPER TRADING • No real orders")
 
-st.success("DEMO MODE — Работим само с виртуални средства.")
+st.caption(
+    "VERSION 1.1 | PAPER TRADING | KRAKEN PUBLIC DATA"
+)
+
+st.success(
+    "DEMO MODE — Системата използва само виртуални средства."
+)
 
 st.divider()
 
-symbols = ["BTCUSDT", "ETHUSDT"]
-market = {}
+st.sidebar.title("ATB 99 CONTROL")
 
-with st.spinner("Получаване на пазарни данни..."):
-    for symbol in symbols:
+st.sidebar.write("Режим: PAPER TRADING")
+st.sidebar.write("Начален капитал: 1 000 USDT")
+st.sidebar.write("Риск на сделка: 0.5%")
+st.sidebar.write("Ливъридж: ИЗКЛЮЧЕН")
+
+if st.sidebar.button("НУЛИРАЙ СИМУЛАЦИЯТА"):
+
+    reset_account()
+    st.rerun()
+
+st.sidebar.caption(
+    "Нулирането изтрива историята на текущата сесия."
+)
+
+# ---------------- FETCH DATA ----------------
+
+market_data = {}
+
+st.subheader("🌐 Пазарен монитор")
+
+with st.spinner("Свързване с Kraken..."):
+
+    for symbol in MARKETS:
+
         try:
-            market[symbol] = analyze(symbol)
+
+            market_data[symbol] = analyze_market(symbol)
+
         except Exception as error:
-            st.error(f"{symbol}: Грешка при връзката: {error}")
 
-if market:
-    st.subheader("Пазарен монитор")
+            st.error(
+                f"{symbol}: Грешка при данните: {error}"
+            )
 
-    cols = st.columns(len(market))
+# ---------------- DISPLAY MARKETS ----------------
 
-    for col, (symbol, data) in zip(cols, market.items()):
-        with col:
+if market_data:
+
+    columns = st.columns(len(market_data))
+
+    for column, (symbol, data) in zip(
+        columns, market_data.items()
+    ):
+
+        with column:
+
             st.markdown(f"### {symbol}")
-            st.metric("Цена", f"{data['price']:,.2f} USDT")
-            st.metric("RSI", f"{data['rsi']:.2f}")
-            st.metric("EMA 20", f"{data['ema20']:.2f}")
-            st.metric("EMA 50", f"{data['ema50']:.2f}")
 
-            color = (
-                "green" if data["signal"] == "BUY"
-                else "red" if data["signal"] == "SELL"
-                else "orange"
+            st.metric(
+                "Последна затворена цена",
+                f"{data['price']:,.2f} USDT"
             )
-            st.markdown(
-                f"**Сигнал:** :{color}[{data['signal']}]"
+
+            st.metric(
+                "RSI 14",
+                f"{data['rsi']:.2f}"
             )
-            st.line_chart(data["chart"])
+
+            st.metric(
+                "EMA 20",
+                f"{data['ema20']:.2f}"
+            )
+
+            st.metric(
+                "EMA 50",
+                f"{data['ema50']:.2f}"
+            )
+
+            signal = data["signal"]
+
+            if signal == "BUY":
+                st.success("BUY")
+
+            elif signal == "SELL":
+                st.error("SELL")
+
+            else:
+                st.warning("HOLD")
+
+            chart = pd.DataFrame(data["chart"])
+
+            st.line_chart(
+                chart.set_index("Time")
+            )
 
     st.divider()
-    st.subheader("Виртуален портфейл")
 
-    position_value = sum(
-        p["qty"] * market[s]["price"]
-        for s, p in st.session_state.positions.items()
-        if s in market
-    )
-    equity = st.session_state.cash + position_value
+    # ---------------- PORTFOLIO ----------------
+
+    st.subheader("💰 Виртуален портфейл")
+
+    equity = calculate_equity(market_data)
+
+    position_value = equity - st.session_state.cash
+
     total_pnl = equity - START_BALANCE
 
     a, b, c, d = st.columns(4)
-    a.metric("Баланс", f"{st.session_state.cash:.2f} USDT")
-    b.metric("Стойност на позициите", f"{position_value:.2f} USDT")
-    c.metric("Обща стойност", f"{equity:.2f} USDT")
-    d.metric("Резултат", f"{total_pnl:+.2f} USDT")
+
+    a.metric(
+        "Свободен баланс",
+        f"{st.session_state.cash:.2f} USDT"
+    )
+
+    b.metric(
+        "Отворени позиции",
+        str(len(st.session_state.positions))
+    )
+
+    c.metric(
+        "Обща стойност",
+        f"{equity:.2f} USDT"
+    )
+
+    d.metric(
+        "Общ резултат",
+        f"{total_pnl:+.2f} USDT"
+    )
+
+    st.caption(
+        f"Реализиран резултат: "
+        f"{st.session_state.realized_pnl:+.2f} USDT"
+    )
 
     st.divider()
-    st.subheader("Автоматична симулация")
 
-    if st.button("▶ ИЗПЪЛНИ PAPER TRADING", type="primary"):
-        results = paper_cycle(market)
-        for result in results:
-            st.write("•", result)
+    # ---------------- AUTOMATION ----------------
+
+    st.subheader("🤖 Автоматично изпълнение")
+
+    st.write(
+        "Ботът анализира новите затворени свещи "
+        "и изпълнява симулирани сделки."
+    )
+
+    if st.button(
+        "▶ ИЗПЪЛНИ АВТОМАТИЧЕН PAPER CYCLE",
+        type="primary"
+    ):
+
+        messages = execute_paper_cycle(market_data)
+
+        for message in messages:
+            st.write("•", message)
+
+        equity = calculate_equity(market_data)
+
+        st.session_state.equity_history.append({
+            "Time": datetime.now(timezone.utc),
+            "Equity": equity
+        })
+
         st.rerun()
 
-    st.subheader("Отворени позиции")
+    st.divider()
+
+    # ---------------- OPEN POSITIONS ----------------
+
+    st.subheader("📊 Отворени позиции")
 
     if st.session_state.positions:
-        for symbol, p in st.session_state.positions.items():
-            st.write(
-                f"**{symbol}** | Вход: {p['entry']:.4f} | "
-                f"SL: {p['stop']:.4f} | TP: {p['target']:.4f}"
+
+        position_rows = []
+
+        for symbol, position in st.session_state.positions.items():
+
+            current = market_data.get(symbol, {}).get(
+                "price", position["entry"]
             )
-    else:
-        st.info("Няма отворени позиции.")
 
-    st.subheader("История на сделките")
+            position_rows.append({
+                "Market": symbol,
+                "Entry": round(position["entry"], 4),
+                "Current": round(current, 4),
+                "Quantity": round(position["qty"], 8),
+                "Stop Loss": round(position["stop"], 4),
+                "Take Profit": round(position["target"], 4)
+            })
 
-    if st.session_state.trades:
         st.dataframe(
-            list(reversed(st.session_state.trades)),
+            pd.DataFrame(position_rows),
             use_container_width=True
         )
-    else:
-        st.info("Все още няма сделки.")
 
-    if st.button("Нулирай виртуалния капитал"):
-        st.session_state.cash = START_BALANCE
-        st.session_state.positions = {}
-        st.session_state.trades = []
-        st.session_state.realized = 0.0
-        st.rerun()
+    else:
+
+        st.info("Няма отворени позиции.")
+
+    st.divider()
+
+    # ---------------- TRADE HISTORY ----------------
+
+    st.subheader("📜 История на сделките")
+
+    if st.session_state.trades:
+
+        st.dataframe(
+            pd.DataFrame(
+                list(reversed(st.session_state.trades))
+            ),
+            use_container_width=True
+        )
+
+    else:
+
+        st.info("Все още няма изпълнени сделки.")
+
+    st.divider()
+
+    # ---------------- EQUITY HISTORY ----------------
+
+    st.subheader("📈 История на капитала")
+
+    if st.session_state.equity_history:
+
+        history = pd.DataFrame(
+            st.session_state.equity_history
+        )
+
+        st.line_chart(
+            history.set_index("Time")
+        )
+
+    else:
+
+        st.info(
+            "Графиката ще се появи след първия PAPER cycle."
+        )
+
+else:
+
+    st.error(
+        "Няма получени пазарни данни. "
+        "Провери връзката с Kraken."
+    )
+
+# ---------------- FOOTER ----------------
 
 st.divider()
+
 st.caption(
-    "ATB 99 • Experimental software • Not financial advice. "
-    "No profit is guaranteed."
+    "ATB 99 | Experimental Paper Trading System"
 )
+
 st.caption(
-    "Пазарни данни: Binance Public API | "
-    + datetime.now(timezone.utc).strftime("UTC %Y-%m-%d %H:%M:%S")
+    "Kraken Public API | No real orders | "
+    "No guaranteed profit"
+)
+
+st.caption(
+    "Време UTC: "
+    + datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 )
